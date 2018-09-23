@@ -334,11 +334,36 @@ static char *build_format(struct ref_filter *filter, int maxwidth, const char *r
 	struct strbuf local = STRBUF_INIT;
 	struct strbuf remote = STRBUF_INIT;
 
-	strbuf_addf(&local, "%%(if)%%(HEAD)%%(then)* %s%%(else)  %s%%(end)",
-		    branch_get_color(BRANCH_COLOR_CURRENT),
-		    branch_get_color(BRANCH_COLOR_LOCAL));
-	strbuf_addf(&remote, "  %s",
-		    branch_get_color(BRANCH_COLOR_REMOTE));
+	// Prepend the current branch of this worktree with "* " and all other branches with "  "
+	strbuf_addf(&local, "%%(if)%%(HEAD)%%(then)* %%(else)  %%(end)");
+	// Prepend remote branches with two spaces
+	strbuf_addstr(&remote, "  ");
+	if(want_color(branch_use_color)) {
+		// Create a nested if statement to evaluate if the current ref is equal to a HEAD ref from either
+		// the main or any linked worktrees. If so, color it CURRENT, otherwise color it LOCAL
+		struct strbuf color = STRBUF_INIT;
+		struct worktree **worktrees = get_worktrees(0);
+		int i;
+		for (i = 0; worktrees[i]; ++i) {
+			strbuf_addf(&color, "%%(if:equals=%s)%%(refname)%%(then)%s%%(else)",
+				    worktrees[i]->head_ref,
+				    branch_get_color(BRANCH_COLOR_CURRENT));
+		}
+		// add one more check in the nested if-else to cover the detached HEAD state
+		strbuf_addf(&color, "%%(if)%%(HEAD)%%(then)%s%%(else)%s%%(end)",
+			    branch_get_color(BRANCH_COLOR_CURRENT),
+			    branch_get_color(BRANCH_COLOR_LOCAL));
+		// close up the nested if-else
+		for (int j = 0; j < i; ++j) {
+			strbuf_addf(&color, "%%(end)");
+		}
+		free_worktrees(worktrees);
+		strbuf_addbuf(&local, &color);
+		strbuf_release(&color);
+
+		strbuf_addf(&remote, "%s",
+			    branch_get_color(BRANCH_COLOR_REMOTE));
+    }
 
 	if (filter->verbose) {
 		struct strbuf obname = STRBUF_INIT;
