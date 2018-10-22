@@ -20,6 +20,8 @@
 #include "commit-slab.h"
 #include "commit-graph.h"
 #include "commit-reach.h"
+#include "worktree.h"
+#include "hashmap.h"
 
 static struct ref_msg {
 	const char *gone;
@@ -75,6 +77,12 @@ static struct expand_data {
 	struct object_info info;
 } oi, oi_deref;
 
+struct reftoworktreeinfo_entry {
+    struct hashmap_entry ent; // must be the first member!
+    struct worktree * worktree;
+    char ref[FLEX_ARRAY]; // key into map
+};
+
 /*
  * An atom is a valid field atom listed below, possibly prefixed with
  * a "*" to denote deref_tag().
@@ -114,6 +122,8 @@ static struct used_atom {
 		} objectname;
 		struct refname_atom refname;
 		char *head;
+		struct hashmap reftoworktreeinfo_map;
+		
 	} u;
 } *used_atom;
 static int used_atom_cnt, need_tagged, need_symref;
@@ -420,6 +430,29 @@ static int head_atom_parser(const struct ref_format *format, struct used_atom *a
 	return 0;
 }
 
+static int worktree_atom_parser(const struct ref_format *format,
+				     struct used_atom *atom,
+				     const char *arg,
+				     struct strbuf *unused_err)
+{
+	struct worktree **worktrees = get_worktrees(0);
+	int i;
+
+	hashmap_init(&(atom->u.reftoworktreeinfo_map), NULL, NULL, 0);
+
+	for (i = 0; worktrees[i]; i++) {
+		if (worktrees[i]->head_ref) {
+			struct reftoworktreeinfo_entry *entry;
+			FLEX_ALLOC_STR(entry, ref, worktrees[i]->head_ref);
+			hashmap_entry_init(entry, strhash(entry->ref));
+			entry->worktree = worktrees[i];
+			hashmap_add(&(atom->u.reftoworktreeinfo_map), entry);
+		}
+	}
+
+	return 0;
+}
+
 static struct {
 	const char *name;
 	info_source source;
@@ -461,6 +494,7 @@ static struct {
 	{ "flag", SOURCE_NONE },
 	{ "HEAD", SOURCE_NONE, FIELD_STR, head_atom_parser },
 	{ "color", SOURCE_NONE, FIELD_STR, color_atom_parser },
+	{ "worktree", SOURCE_NONE, FIELD_STR, worktree_atom_parser },
 	{ "align", SOURCE_NONE, FIELD_STR, align_atom_parser },
 	{ "end", SOURCE_NONE },
 	{ "if", SOURCE_NONE, FIELD_STR, if_atom_parser },
@@ -1496,6 +1530,52 @@ static int get_object(struct ref_array_item *ref, int deref, struct object **obj
 	return 0;
 }
 
+static const char * get_worktree_info(struct used_atom *atom, struct ref_array_item *ref)
+{
+	struct strbuf val = STRBUF_INIT;
+	struct reftoworktreeinfo_entry * entry;
+	FLEX_ALLOC_STR(entry, ref, ref->refname);
+	hashmap_entry_init(entry, strhash(entry->ref));
+	struct reftoworktreeinfo_entry * lookup_result = hashmap_get(&(atom->u.reftoworktreeinfo_map), entry, NULL);
+	free(entry);
+
+	if (lookup_result)
+	{
+		const char * name = atom->name;
+		const char * arg = memchr(name, ':', strlen(name));
+		const struct worktree * wt = lookup_result->worktree;
+		int arglen = arg ? strlen(arg) - 1 : 0;
+		if (arg && arglen)
+		{
+			arg += 1;
+			if (!strncmp(arg, "path", arglen))
+				strbuf_addf(&val, "%s", wt->path);
+			else if (!strncmp(arg, "id", arglen))
+				strbuf_addf(&val, "%s", wt->id);
+			else if (!strncmp(arg, "head_ref", arglen))
+				strbuf_addf(&val, "%s", wt->head_ref);
+			else if (!strncmp(arg, "lock_reason", arglen))
+				strbuf_addf(&val, "%s", worktree_lock_reason(wt));
+			else if (!strncmp(arg, "head_oid", arglen))
+				strbuf_addf(&val, "%s", wt->head_oid.hash);
+			else if (!strncmp(arg, "is_detached", arglen))
+				strbuf_addf(&val, "%d", wt->is_detached);
+			else if (!strncmp(arg, "is_bare", arglen))
+				strbuf_addf(&val, "%d", wt->is_bare);
+			else if (!strncmp(arg, "is_current", arglen))
+				strbuf_addf(&val, "%d", wt->is_current);
+			else
+				die(_("unknown worktree arg %s"), arg);
+		}
+		else
+			strbuf_addstr(&val, "+");
+	}
+	else
+		strbuf_addstr(&val, " ");
+
+	return strbuf_detach(&val, NULL);
+}
+
 /*
  * Parse the object referred by ref, and grab needed value.
  */
@@ -1533,6 +1613,10 @@ static int populate_value(struct ref_array_item *ref, struct strbuf *err)
 
 		if (starts_with(name, "refname"))
 			refname = get_refname(atom, ref);
+		else if (starts_with(name, "worktree")) {
+			v->s = get_worktree_info(atom, ref);
+			continue;
+		}
 		else if (starts_with(name, "symref"))
 			refname = get_symref(atom, ref);
 		else if (starts_with(name, "upstream")) {
