@@ -634,8 +634,8 @@ static int lock_worktree(int ac, const char **av, const char *prefix)
 	if (is_main_worktree(wt))
 		die(_("The main working tree cannot be locked or unlocked"));
 
-	old_reason = is_worktree_locked(wt);
-	if (old_reason) {
+	if (wt->is_locked) {
+		old_reason = worktree_locked_reason(wt);
 		if (*old_reason)
 			die(_("'%s' is already locked, reason: %s"),
 			    av[0], old_reason);
@@ -666,7 +666,7 @@ static int unlock_worktree(int ac, const char **av, const char *prefix)
 		die(_("'%s' is not a working tree"), av[0]);
 	if (is_main_worktree(wt))
 		die(_("The main working tree cannot be locked or unlocked"));
-	if (!is_worktree_locked(wt))
+	if (!wt->is_locked)
 		die(_("'%s' is not locked"), av[0]);
 	ret = unlink_or_warn(git_common_path("worktrees/%s/locked", wt->id));
 	free_worktrees(worktrees);
@@ -734,8 +734,8 @@ static int move_worktree(int ac, const char **av, const char *prefix)
 
 	validate_no_submodules(wt);
 
-	reason = is_worktree_locked(wt);
-	if (reason) {
+	if (wt->is_locked) {
+		reason = worktree_locked_reason(wt);
 		if (*reason)
 			die(_("cannot move a locked working tree, lock reason: %s"),
 			    reason);
@@ -860,11 +860,11 @@ static int remove_worktree(int ac, const char **av, const char *prefix)
 		die(_("'%s' is not a working tree"), av[0]);
 	if (is_main_worktree(wt))
 		die(_("'%s' is a main working tree"), av[0]);
-	reason = is_worktree_locked(wt);
-	if (reason) {
+	if (wt->is_locked) {
+		reason = worktree_locked_reason(wt);
 		if (*reason)
 			die(_("cannot remove a locked working tree, lock reason: %s"),
-			    reason);
+				reason);
 		die(_("cannot remove a locked working tree"));
 	}
 	if (validate_worktree(wt, &errmsg, WT_VALIDATE_WORKTREE_MISSING_OK))

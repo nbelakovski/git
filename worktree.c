@@ -14,7 +14,6 @@ void free_worktrees(struct worktree **worktrees)
 		free(worktrees[i]->path);
 		free(worktrees[i]->id);
 		free(worktrees[i]->head_ref);
-		free(worktrees[i]->lock_reason);
 		free(worktrees[i]);
 	}
 	free (worktrees);
@@ -41,13 +40,29 @@ static void add_head_info(struct worktree *wt)
 		wt->is_detached = 1;
 }
 
+
+/**
+ * Return 1 if the worktree is locked, 0 otherwise
+ */
+static int is_worktree_locked(const struct worktree *wt)
+{
+	struct strbuf path = STRBUF_INIT;
+	int locked_file_exists;
+
+	assert(!is_main_worktree(wt));
+
+	strbuf_addstr(&path, worktree_git_path(wt, "locked"));
+	locked_file_exists = file_exists(path.buf);
+	strbuf_release(&path);
+	return locked_file_exists;
+}
+
 /**
  * get the main worktree
  */
 static struct worktree *get_main_worktree(void)
 {
 	struct worktree *worktree = NULL;
-	struct strbuf path = STRBUF_INIT;
 	struct strbuf worktree_path = STRBUF_INIT;
 	int is_bare = 0;
 
@@ -56,14 +71,11 @@ static struct worktree *get_main_worktree(void)
 	if (is_bare)
 		strbuf_strip_suffix(&worktree_path, "/.");
 
-	strbuf_addf(&path, "%s/HEAD", get_git_common_dir());
-
 	worktree = xcalloc(1, sizeof(*worktree));
 	worktree->path = strbuf_detach(&worktree_path, NULL);
 	worktree->is_bare = is_bare;
 	add_head_info(worktree);
 
-	strbuf_release(&path);
 	strbuf_release(&worktree_path);
 	return worktree;
 }
@@ -89,12 +101,10 @@ static struct worktree *get_linked_worktree(const char *id)
 		strbuf_strip_suffix(&worktree_path, "/.");
 	}
 
-	strbuf_reset(&path);
-	strbuf_addf(&path, "%s/worktrees/%s/HEAD", get_git_common_dir(), id);
-
 	worktree = xcalloc(1, sizeof(*worktree));
 	worktree->path = strbuf_detach(&worktree_path, NULL);
 	worktree->id = xstrdup(id);
+	worktree->is_locked = is_worktree_locked(worktree);
 	add_head_info(worktree);
 
 done:
@@ -231,27 +241,20 @@ int is_main_worktree(const struct worktree *wt)
 	return !wt->id;
 }
 
-const char *is_worktree_locked(struct worktree *wt)
+const char *worktree_locked_reason(const struct worktree *wt)
 {
+	struct strbuf path = STRBUF_INIT;
+	struct strbuf lock_reason = STRBUF_INIT;
+
 	assert(!is_main_worktree(wt));
+	assert(wt->is_locked);
 
-	if (!wt->lock_reason_valid) {
-		struct strbuf path = STRBUF_INIT;
-
-		strbuf_addstr(&path, worktree_git_path(wt, "locked"));
-		if (file_exists(path.buf)) {
-			struct strbuf lock_reason = STRBUF_INIT;
-			if (strbuf_read_file(&lock_reason, path.buf, 0) < 0)
-				die_errno(_("failed to read '%s'"), path.buf);
-			strbuf_trim(&lock_reason);
-			wt->lock_reason = strbuf_detach(&lock_reason, NULL);
-		} else
-			wt->lock_reason = NULL;
-		wt->lock_reason_valid = 1;
-		strbuf_release(&path);
-	}
-
-	return wt->lock_reason;
+	strbuf_addstr(&path, worktree_git_path(wt, "locked"));
+	if (strbuf_read_file(&lock_reason, path.buf, 0) < 0)
+		die_errno(_("failed to read '%s'"), path.buf);
+	strbuf_trim(&lock_reason);
+	strbuf_release(&path);
+	return strbuf_detach(&lock_reason, NULL);
 }
 
 /* convenient wrapper to deal with NULL strbuf */
